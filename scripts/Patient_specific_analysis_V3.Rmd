@@ -1,0 +1,905 @@
+---
+title: "Seurat analysis of MaCa samples from TCR project"
+output:
+  html_document:
+    df_print: paged
+---
+# package instalation and libery uploads
+```{r}
+devtools::install_github(repo = "ChristophH/sctransform", ref = "develop")
+devtools::install_github(repo = "satijalab/seurat", ref = "release/3.0")
+install.packages("reticulate")
+install.packages("devtools")
+install.packages("umap")
+library(SingleCellExperiment)
+library(Seurat)
+library(Matrix)
+library(mclust)
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+library(umap)
+library(reticulate)
+library(cowplot)
+devtools::install_url("http://cran.r-project.org/src/contrib/rmarkdown_1.0.tar.gz")
+devtools::install_github("cole-trapnell-lab/DDRTree", ref="simple-ppt-like")
+devtools::install_github("cole-trapnell-lab/L1-graph")
+install.packages("reticulate")
+library(reticulate)
+py_install("umap-learn")
+py_install("louvain")
+source("https://bioconductor.org/biocLite.R")
+biocLite("monocle")
+library(monocle)
+
+```
+
+# read samples and annotation information
+```{r}
+path= "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/"
+samples <- read.table(paste(path, "FeatureCount_Data_AllSamples_ForSeuratAnalysis.txt", sep=""), check.names = F, header=T)
+row.names(samples)<- samples[,1]
+samples <- samples[,2:ncol(samples)]
+annot <- read.table(paste(path, "FeatureCount_AnnotationFile_AllSamples_ForSeuratAnalysis.txt", sep=""), check.names = F, header=T)
+head(annot)
+```
+
+# generate SingleCellExperiment objects
+```{r}
+reads <- SingleCellExperiment(assays = list(counts = as.matrix(samples), logcounts = log2(as.matrix(samples) + 1)), colData = annot)
+rowData(reads)$feature_symbol <- rownames(reads)
+reads <- reads[!duplicated(rowData(reads)$feature_symbol), ]
+reads
+```
+
+# split by patients
+```{r}
+patients <- reads[, reads$patients %in% c("MaCa5", "MaCa7", "MaCa8", "MaCa9")] #dim: 60711 1313 
+tumor <- reads[, reads$tissue== "tumor"] #dim: 60711 972 
+tumor_maca5 <- reads[,reads$patients== "MaCa5"] #dim: 60711 352 
+tumor_maca7 <- reads[,reads$patients== "MaCa7"] #dim: 60711 351
+tumor_maca8 <- reads[,reads$patients== "MaCa8"] #dim: 60711 258  
+tumor_maca9 <- reads[,reads$patients== "MaCa9"] #dim: 60711 352 
+
+tt5 <- tumor[,tumor$patients== "MaCa5"] #dim: 60711 352
+tt7 <- tumor[,tumor$patients== "MaCa7"] #dim: 60711 263
+tt8 <- tumor[,tumor$patients== "MaCa8"] #dim: 60711 93  
+tt9 <- tumor[,tumor$patients== "MaCa9"] #dim: 60711 264 
+```
+
+
+```{r}
+tumorset <- runPCA(tumorset, ncomponents = 50)
+pca <- reducedDim(tumorset, "PCA")
+# Add PCA data to the deng_SCE object.
+patients$PC1 <- pca[, 1]
+patients$PC2 <- pca[, 2]
+ggplot(as.data.frame(colData(patients)), aes(x = PC1, y = PC2, color = Cell_type_advance)) + geom_quasirandom(groupOnX = FALSE) + theme_classic() +theme_classic() + xlab("PC1") + ylab("PC2") + ggtitle("PC biplot") 
+
+patients$pseudotime_PC1 <- rank(patients$PC1)  # rank cells by their PC1 score
+ggplot(as.data.frame(colData(patients)), aes(x = pseudotime_PC1, y = Cell_type_advance, colour = Cell_type_advance)) + geom_quasirandom(groupOnX = FALSE) + theme_classic() + xlab("PC1") + ylab("Timepoint") + ggtitle("Cells ordered by first principal component")
+```
+
+
+
+# create Seurat object
+```{r}
+AllSamples <- CreateSeuratObject(counts = counts(reads), min.cells = 4, min.features = 500) #24282 features across 1921 samples within 1 assay 
+patientset <- CreateSeuratObject(counts = counts(patients), min.cells = 4, min.features = 500) #19279 features across 1155 samples within 1 assay 
+tumorset <- CreateSeuratObject(counts = counts(tumor), min.cells = 4, min.features = 500) #17377 features across 836 samples within 1 assay 
+maca5 <- CreateSeuratObject(counts = counts(tumor_maca5), min.cells = 4, min.features = 500) #13430 features across 334 samples within 1 assay 
+maca7 <- CreateSeuratObject(counts = counts(tumor_maca7), min.cells = 4, min.features = 500) #12643 features across 282 samples within 1 assay 
+maca8 <- CreateSeuratObject(counts = counts(tumor_maca8), min.cells = 4, min.features = 500) #11632 features across 211 samples within 1 assay 
+maca9 <- CreateSeuratObject(counts = counts(tumor_maca9), min.cells = 4, min.features = 500) #13744 features across 328 samples within 1 assay 
+
+tm5 <- CreateSeuratObject(counts = counts(tt5), min.cells = 4, min.features = 500) #13430 features across 334 samples
+tm7 <- CreateSeuratObject(counts = counts(tt7), min.cells = 4, min.features = 500) #11135 features across 196 samples
+tm8 <- CreateSeuratObject(counts = counts(tt8), min.cells = 4, min.features = 500) #5286 features across 61 samples
+tm9 <- CreateSeuratObject(counts = counts(tt9), min.cells = 4, min.features = 500) #12580 features across 245 samples
+```
+
+# ERCC and MT count
+```{r}
+# Percentage of genes that are MT
+mt<- read.table("~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/MT.txt")
+mt<- as.character(mt$V1)
+AllSamples <- PercentageFeatureSet(object = AllSamples, features= row.names(AllSamples) %in% mt, col.name = "percent.mt")
+patientset <- PercentageFeatureSet(object = patientset, features = row.names(patientset) %in% mt, col.name= "percent.mt")
+tumorset <- PercentageFeatureSet(object = tumorset, features = row.names(tumorset) %in% mt, col.name="percent.mt")
+maca5 <- PercentageFeatureSet(object = maca5, features = row.names(maca5) %in% mt, col.name="percent.mt")
+maca7 <- PercentageFeatureSet(object = maca7, features = row.names(maca7) %in% mt, col.name="percent.mt")
+maca8 <- PercentageFeatureSet(object = maca8, features = row.names(maca8) %in% mt, col.name="percent.mt")
+maca9 <- PercentageFeatureSet(object = maca9, features = row.names(maca9) %in% mt, col.name="percent.mt")
+
+tm5 <- PercentageFeatureSet(object = tm5, features = row.names(tm5) %in% mt, col.name="percent.mt")
+tm7 <- PercentageFeatureSet(object = tm7, features = row.names(tm7) %in% mt, col.name="percent.mt")
+tm8 <- PercentageFeatureSet(object = tm8, features = row.names(tm8) %in% mt, col.name="percent.mt")
+tm9 <- PercentageFeatureSet(object = tm9, features = row.names(tm9) %in% mt, col.name="percent.mt")
+
+# Percentage of ERCC
+AllSamples <- PercentageFeatureSet(object = AllSamples, pattern = "^ERCC-", col.name = "percent.ercc")
+patientset <- PercentageFeatureSet(object = patientset, pattern = "^ERCC-", col.name = "percent.ercc")
+tumorset <- PercentageFeatureSet(object = tumorset, pattern = "^ERCC-", col.name = "percent.ercc")
+maca5 <- PercentageFeatureSet(object = maca5, pattern = "^ERCC", col.name = "percent.ercc")
+maca7 <- PercentageFeatureSet(object = maca7, pattern = "^ERCC", col.name = "percent.ercc")
+maca8 <- PercentageFeatureSet(object = maca8, pattern = "^ERCC", col.name = "percent.ercc")
+maca9 <- PercentageFeatureSet(object = maca9, pattern = "^ERCC", col.name = "percent.ercc")
+
+tm5 <- PercentageFeatureSet(object = tm5, pattern = "^ERCC", col.name = "percent.ercc")
+tm7 <- PercentageFeatureSet(object = tm7, pattern = "^ERCC", col.name = "percent.ercc")
+tm8 <- PercentageFeatureSet(object = tm8, pattern = "^ERCC", col.name = "percent.ercc")
+tm9 <- PercentageFeatureSet(object = tm9, pattern = "^ERCC", col.name = "percent.ercc")
+```
+
+# QC plots
+```{r}
+VlnPlot(object = AllSamples, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = patientset, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = tumorset, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = maca5, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = maca7, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = maca8, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = maca9, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+
+VlnPlot(object = tm5, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = tm7, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = tm8, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+VlnPlot(object = tm9, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.ercc"), ncol = 4)
+
+
+```
+
+# Visualizing feature-feature relationships
+```{r}
+run<- AllSamples
+plot1 <- FeatureScatter(object = run, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2 <- FeatureScatter(object = run, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot3 <- FeatureScatter(object = run, feature1 = "nCount_RNA", feature2 = "percent.ercc")
+CombinePlots(plots = list(plot1, plot2, plot3), ncol = 1)
+```
+# add extra annotations to the metadata 
+```{r}
+#samset <- c(AllSamples, patientset, tumorset, maca5, maca7, maca8, maca9, tm5, tm7, tm8, tm9)
+#for (s in 1:length(samset)){
+#runset<- samset[s]
+runset<- patientset
+for (i in 1:nrow(runset@meta.data)){
+  for (j in 1:nrow(annot)){
+    if(as.character(rownames(runset@meta.data)[i])== as.character(annot$sample_id)[j]){
+      runset@meta.data$well_id[i]= as.character(annot$well_id[j])
+      runset@meta.data$Cell_type_advance[i]= as.character(annot$Cell_type_advance[j])
+      runset@meta.data$run_id[i]= as.character(annot$run_id[j])
+      runset@meta.data$plate_id[i]= as.character(annot$plate_id[j])
+      runset@meta.data$patients[i]= as.character(annot$patients[j])
+      runset@meta.data$tissue[i]= as.character(annot$tissue[j])
+      runset@meta.data$overlap[i]= as.character(annot$overlap[j])}}}
+head(runset@meta.data)
+patientset<- runset
+#samset[s] <- runset
+#}
+```
+
+# filter low quality reads
+```{r}
+AllSamples <- subset(x = AllSamples, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #24282 features across 1848 samples
+patientset <- subset(x = patientset, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #19279 features across 1100 samples
+tumorset <- subset(x = tumorset, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #17377 features across 801 samples
+maca5 <- subset(x = maca5, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #13430 features across 323 samples
+maca7 <- subset(x = maca7, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #12643 features across 263 samples
+maca8 <- subset(x = maca8, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #11632 features across 189 samples
+maca9 <- subset(x = maca9, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #13744 features across 320 samples
+
+tm5 <- subset(x = tm5, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #13430 features across 323 samples within 1 assay
+tm7 <- subset(x = tm7, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #11135 features across 177 samples within 1 assay
+tm8 <- subset(x = tm8, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #5286 features across 55 samples within 1 assay 
+tm9 <- subset(x = tm9, subset = nFeature_RNA > 500 & nFeature_RNA < 10000 & percent.ercc < 20 & percent.mt < 15) #12580 features across 239 samples within 1 assay 
+```
+
+# Normalizing the 
+```{r}
+AllSamples <- NormalizeData(object = AllSamples, normalization.method = "LogNormalize", scale.factor = 10000)
+patientset<- NormalizeData(object = patientset, normalization.method = "LogNormalize", scale.factor = 10000)
+tumorset<- NormalizeData(object = tumorset, normalization.method = "LogNormalize", scale.factor = 10000)
+maca5 <- NormalizeData(object = maca5, normalization.method = "LogNormalize", scale.factor = 10000)
+maca7 <- NormalizeData(object = maca7, normalization.method = "LogNormalize", scale.factor = 10000)
+maca8 <- NormalizeData(object = maca8, normalization.method = "LogNormalize", scale.factor = 10000)
+maca9 <- NormalizeData(object = maca9, normalization.method = "LogNormalize", scale.factor = 10000)
+
+tm5 <- NormalizeData(object = tm5, normalization.method = "LogNormalize", scale.factor = 10000)
+tm7 <- NormalizeData(object = tm7, normalization.method = "LogNormalize", scale.factor = 10000)
+tm8 <- NormalizeData(object = tm8, normalization.method = "LogNormalize", scale.factor = 10000)
+tm9 <- NormalizeData(object = tm9, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+# Identification of highly variable features (feature selection)
+```{r}
+#samset <- c(AllSamples, patientset, tumorset, maca5, maca7, maca8, maca9, tm5, tm7, tm8, tm9)
+AllSamples<-  FindVariableFeatures(object = AllSamples, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+patientset<-  FindVariableFeatures(object = patientset, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+tumorset<-  FindVariableFeatures(object = tumorset, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+maca5<-  FindVariableFeatures(object = maca5, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+maca7<-  FindVariableFeatures(object = maca7, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+maca8<-  FindVariableFeatures(object = maca8, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+maca9<-  FindVariableFeatures(object = maca9, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+tm5<-  FindVariableFeatures(object = tm5, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+tm7<-  FindVariableFeatures(object = tm7, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+tm8<-  FindVariableFeatures(object = tm8, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE)
+tm9<-  FindVariableFeatures(object = tm9, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE) 
+
+# Identify the 10 most highly variable genes
+top10 <- head(x = VariableFeatures(object = patientset), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(object = patientset)
+plot2 <- LabelPoints(plot = plot1, points = top10 , repel = TRUE)
+#CombinePlots(plots = list(plot1, plot2), ncol = 1)
+plot2
+```
+
+#Scaling the data by apply a linear transformation
+```{r}
+#Shifts the expression of each gene, so that the mean expression across cells is 0
+#Scales the expression of each gene, so that the variance across cells is 1 This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+#samset <- c(AllSamples, patientset, tumorset, maca5, maca7, maca8, maca9, tm5, tm7, tm8, tm9)
+AllSamples<- ScaleData(object = AllSamples, features = rownames(x = AllSamples))
+patientset<- ScaleData(object = patientset, features = rownames(x = patientset))
+tumorset<- ScaleData(object = tumorset, features = rownames(x = tumorset))
+maca5<- ScaleData(object = maca5, features = rownames(x = maca5))
+maca7<- ScaleData(object = maca7, features = rownames(x = maca7))
+maca8<- ScaleData(object = maca8, features = rownames(maca8))
+maca9<- ScaleData(object = maca9, features = rownames(x = maca9))
+tm5<- ScaleData(object = tm5, features = rownames(x = tm5))
+tm7<- ScaleData(object = tm7, features = rownames(x = tm7))
+tm8<- ScaleData(object = tm8, features = rownames(x = tm8))
+tm9<- ScaleData(object = tm9, features = rownames(x = tm9))
+
+```
+
+
+# Perform linear dimensional reduction
+```{r}
+AllSamples <- RunPCA(object = AllSamples, features = VariableFeatures(object = AllSamples))
+patientset <- RunPCA(object = patientset, features = VariableFeatures(object = patientset))
+tumorset<- RunPCA(object = tumorset, features = VariableFeatures(object = tumorset))
+maca5 <- RunPCA(object = maca5, features = VariableFeatures(object = maca5))
+maca7 <- RunPCA(object = maca7, features = VariableFeatures(object = maca7))
+maca8 <- RunPCA(object = maca8, features = VariableFeatures(object = maca8))
+maca9 <- RunPCA(object = maca9, features = VariableFeatures(object = maca9))
+tm5 <- RunPCA(object = tm5, features = VariableFeatures(object = tm5))
+tm7 <- RunPCA(object = tm7, features = VariableFeatures(object = tm7))
+tm8 <- RunPCA(object = tm8, features = VariableFeatures(object = tm8))
+tm9 <- RunPCA(object = tm9, features = VariableFeatures(object = tm9))
+```
+
+# Examine and visualize PCA results a few different ways
+```{r}
+print(x = AllSamples[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = patientset[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = tumorset[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = maca5[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = maca7[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = maca8[["pca"]], dims = 1:10, nfeatures = 10)
+print(x = maca9[["pca"]], dims = 1:10, nfeatures = 10)
+```
+
+# pc1 and pc2
+```{r}
+VizDimLoadings(object = AllSamples, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = patientset, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = tumorset, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = maca5, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = maca7, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = maca8, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = maca9, dims = 1:2, reduction = "pca")
+
+VizDimLoadings(object = tm5, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = tm7, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = tm8, dims = 1:2, reduction = "pca")
+VizDimLoadings(object = tm9, dims = 1:2, reduction = "pca")
+```
+
+# PCA plots
+```{r}
+DimPlot(object = AllSamples, reduction = "pca") 
+DimPlot(object = patientset, reduction = "pca") 
+DimPlot(object = tumorset, reduction = "pca") 
+DimPlot(object = maca5, reduction = "pca")
+DimPlot(object = maca7, reduction = "pca") 
+DimPlot(object = maca8, reduction = "pca") 
+DimPlot(object = maca9, reduction = "pca") 
+DimPlot(object = maca9, reduction = "pca") 
+DimPlot(object = tm5, reduction = "pca") 
+DimPlot(object = tm7, reduction = "pca") 
+DimPlot(object = tm8, reduction = "pca") 
+DimPlot(object = tm9, reduction = "pca") 
+
+DimPlot(object = AllSamples, reduction = "pca", group.by ="Cell_type_advance") #StashIdent
+DimPlot(object = patientset, reduction = "pca", group.by ="Cell_type_advance")
+DimPlot(object = tumorset, reduction = "pca", group.by ="Cell_type_advance") #StashIdent
+DimPlot(object = maca5, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = maca7, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = maca8, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = maca9, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = tm5, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = tm7, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = tm8, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+DimPlot(object = tm9, reduction = "pca", group.by ="Cell_type_advance" ) #StashIdent
+```
+
+# exploration of the primary sources of heterogeneity
+```{r}
+DimHeatmap(object = AllSamples, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = patientset, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = tumorset, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = maca5, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = maca7, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = maca8, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = maca9, dims = 1:15, cells = 1000, balanced = TRUE)
+DimHeatmap(object = tm5, dims = 1:4, cells = 1000, balanced = TRUE)
+DimHeatmap(object = tm7, dims = 1:4, cells = 1000, balanced = TRUE)
+DimHeatmap(object = tm8, dims = 1:4, cells = 1000, balanced = TRUE)
+DimHeatmap(object = tm9, dims = 1:4, cells = 1000, balanced = TRUE)
+```
+
+# Determine the ‘dimensionality’ of the dataset
+```{r}
+# NOTE: This process can take a long time for big datasets, comment out for expediency. More
+# approximate techniques such as those implemented in ElbowPlot() can be used to reduce
+# computation time
+AllSamples <- JackStraw(object = AllSamples, num.replicate = 100)
+AllSamples <- ScoreJackStraw(object = AllSamples, dims = 1:20)
+patientset <- JackStraw(object = patientset, num.replicate = 100)
+patientset <- ScoreJackStraw(object = patientset, dims = 1:20)
+tumorset <- JackStraw(object = tumorset, num.replicate = 100)
+tumorset <- ScoreJackStraw(object = tumorset, dims = 1:20)
+maca5 <- JackStraw(object = maca5, num.replicate = 100)
+maca5 <- ScoreJackStraw(object = maca5, dims = 1:20)
+maca7 <- JackStraw(object = maca7, num.replicate = 100)
+maca7 <- ScoreJackStraw(object = maca7, dims = 1:20)
+maca8 <- JackStraw(object = maca8, num.replicate = 100)
+maca8 <- ScoreJackStraw(object = maca8, dims = 1:20)
+maca9 <- JackStraw(object = maca9, num.replicate = 100)
+maca9 <- ScoreJackStraw(object = maca9, dims = 1:20)
+
+tm5 <- JackStraw(object = tm5, num.replicate = 100)
+tm5 <- ScoreJackStraw(object = tm5, dims = 1:20)
+tm7 <- JackStraw(object = tm7, num.replicate = 100)
+tm7 <- ScoreJackStraw(object = tm7, dims = 1:20)
+tm8 <- JackStraw(object = tm8, num.replicate = 100)
+tm8 <- ScoreJackStraw(object = tm8, dims = 1:20)
+tm9 <- JackStraw(object = tm9, num.replicate = 100)
+tm9 <- ScoreJackStraw(object = tm9, dims = 1:20)
+```
+
+# comparing the distribution of p-values for each PC with a uniform distribution
+```{r}
+JackStrawPlot(object = AllSamples, dims = 1:15)
+ElbowPlot(object = AllSamples)
+JackStrawPlot(object = patientset, dims = 1:15)
+ElbowPlot(object = patientset)
+JackStrawPlot(object = tumorset, dims = 1:15)
+ElbowPlot(object = tumorset)
+JackStrawPlot(object = maca5, dims = 1:15)
+ElbowPlot(object = maca5)
+JackStrawPlot(object = maca7, dims = 1:15)
+ElbowPlot(object = maca7)
+JackStrawPlot(object = maca8, dims = 1:15)
+ElbowPlot(object = maca8)
+JackStrawPlot(object = maca9, dims = 1:15)
+ElbowPlot(object = maca9)
+JackStrawPlot(object = tm5, dims = 1:15)
+ElbowPlot(object = tm5)
+JackStrawPlot(object = tm7, dims = 1:15)
+ElbowPlot(object = tm7)
+JackStrawPlot(object = tm8, dims = 1:15)
+ElbowPlot(object = tm8)
+JackStrawPlot(object = tm9, dims = 1:15)
+ElbowPlot(object = tm9)
+
+```
+
+
+# Cluster the cells
+
+```{r}
+AllSamples <- FindNeighbors(object = AllSamples, dims = 1:10)
+AllSamples <- FindClusters(object = AllSamples, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 9
+patientset <- FindNeighbors(object = patientset, dims = 1:10)
+patientset <- FindClusters(object = patientset, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 7
+tumorset <- FindNeighbors(object = tumorset, dims = 1:10)
+tumorset5 <- FindClusters(object = tumorset, reduction.type = "pca", resolution = 0.5, dims.use = 1:15, save.SNN = TRUE, algorithm = 3) # k = 5
+tumorset <- FindClusters(object = tumorset, reduction.type = "pca", resolution = 1.1, dims.use = 1:15, save.SNN = TRUE, algorithm = 3) # to achieve higher resolution clusters k=8       
+maca5 <- FindNeighbors(object = maca5, dims = 1:10)
+maca5 <- FindClusters(object = maca5, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 3
+maca7 <- FindNeighbors(object = maca7, dims = 1:10)
+maca7 <- FindClusters(object = maca7, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 3
+maca8 <- FindNeighbors(object = maca8, dims = 1:10)
+maca8 <- FindClusters(object = maca8, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 3
+maca9 <- FindNeighbors(object = maca9, dims = 1:10)
+maca9 <- FindClusters(object = maca9, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 4
+tm5 <- FindNeighbors(object = tm5, dims = 1:10)
+tm5 <- FindClusters(object = tm5, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 3
+tm7 <- FindNeighbors(object = tm7, dims = 1:10)
+tm7 <- FindClusters(object = tm7, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 2
+tm8 <- FindNeighbors(object = tm8, dims = 1:10)
+tm8 <- FindClusters(object = tm8, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 1
+tm9 <- FindNeighbors(object = tm9, dims = 1:10)
+tm9 <- FindClusters(object = tm9, reduction.type = "pca", resolution = 0.5, save.SNN = TRUE, algorithm = 3) # k = 3
+```
+
+#Run non-linear dimensional reduction (UMAP/tSNE)
+library(viridis)
+library(gridExtra)
+reticulate::py_install(packages ='umap-learn')
+install.packages('umap')
+library(umap)
+install.packages('reticulate')
+library('reticulate')
+reticulate::py_install(packages ='umap-learn')
+
+```{r}
+# Load the "scales" package
+require(scales)
+
+# Create vector with levels of object@ident
+identities <- 
+
+# Create vector of default ggplot2 colors
+my_color_palette <- hue_pal(h = c(180, 270)(9))(length(identities))
+my_color_palette<- c("blue","darkgreen", "brown")
+# Plot the tSNE plot with the default ggplot2 colors
+TSNEPlot(object = tumorset5, do.return = T, group.by = "Cell_type_advance", label = TRUE) +scale_color_manual(values = my_color_palette)
+```
+
+#Run non-linear dimensional reduction tSNE
+```{r}
+AllSamples <- RunTSNE(object = AllSamples, dims = 1:9)
+DimPlot(object = AllSamples, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+DimPlot(object = AllSamples, reduction = "tsne", group.by = "tissue", label = TRUE) # tsne_AllSamples_labeledbyTissue
+patientset <- RunTSNE(object = patientset, dims = 1:7)
+DimPlot(object = patientset, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE, pt.size= 4)
+DimPlot(object = patientset, reduction = "tsne", group.by = "tissue", label = TRUE, pt.size= 4)
+tumorset5 <- RunTSNE(object = tumorset5, dims = 1:5)
+DimPlot(object = tumorset5, reduction = "tsne", group.by = "Cell_type_advance", label = FALSE, pt.size = 2) +scale_color_manual(values = my_color_palette)
+DimPlot(object = tumorset5, reduction = "tsne", label = FALSE, pt.size = 2) 
+
+tumorset <- RunTSNE(object = tumorset, dims = 1:5)
+DimPlot(object = tumorset, reduction = "tsne", label = TRUE)
+DimPlot(object = tumorset, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+maca5 <- RunTSNE(object = maca5, dims = 1:3)
+DimPlot(object = maca5, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+DimPlot(object = maca5, reduction = "tsne", group.by = "tissue", label = TRUE) 
+maca7 <- RunTSNE(object = maca7, dims = 1:3)
+DimPlot(object = maca7, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+DimPlot(object = maca7, reduction = "tsne", group.by = "tissue", label = TRUE) 
+maca8 <- RunTSNE(object = maca8, dims = 1:3)
+DimPlot(object = maca8, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+DimPlot(object = maca8, reduction = "tsne", group.by = "tissue", label = TRUE) 
+maca9 <- RunTSNE(object = maca9, dims = 1:3)
+DimPlot(object = maca9, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+DimPlot(object = maca9, reduction = "tsne", label = TRUE)
+DimPlot(object = maca9, reduction = "tsne", group.by = "tissue", label = TRUE) 
+tm5 <- RunTSNE(object = tm5, dims = 1:3)
+DimPlot(object = tm5, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+tm7 <- RunTSNE(object = tm7)
+DimPlot(object = tm7, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+# not possible to run tsne not complex enough
+#tm8 <- RunTSNE(object = tm8, dim= 1:3)
+#DimPlot(object = tm8, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+tm9 <- RunTSNE(object = tm9, dims = 1:3)
+DimPlot(object = tm9, reduction = "tsne", group.by = "Cell_type_advance", label = TRUE)
+
+```
+
+
+#Finding differentially expressed features (cluster biomarkers)
+```{r}
+# find all markers
+AllSamples.markers <- FindAllMarkers(object = AllSamples, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+ASm<- AllSamples.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(ASm, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_AllSamples.txt", quote=F, row.names = F, sep="\t")
+patient.markers <- FindAllMarkers(object = patientset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+pm<- patient.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(pm, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_PatientSet.txt", quote=F, row.names = F, sep="\t")
+tumor.markers.5 <- FindAllMarkers(object = tumorset5, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+tm5<- tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+ttm5<- tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+
+tumor.markers <- FindAllMarkers(object = tumorset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+tm<- tumor.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+write.table(tm,"~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/to20genemarkers_percluster_TumorSet_8clusters.txt", quote=F, row.names = F, sep="\t")
+#write.table(tm, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_TumorSet.txt", quote=F, row.names = F, sep="\t")
+maca5.markers <- FindAllMarkers(object = maca5, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+m5m<- maca5.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(m5m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa5.txt", quote=F, row.names = F, sep="\t")
+maca7.markers <- FindAllMarkers(object = maca7, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+m7m<- maca7.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(m7m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa7.txt", quote=F, row.names = F, sep="\t")
+maca8.markers <- FindAllMarkers(object = maca8, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+m8m<- maca8.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(m8m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa8.txt", quote=F, row.names = F, sep="\t")
+maca9.markers <- FindAllMarkers(object = maca9, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+m9m<- maca9.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(m9m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa9.txt", quote=F, row.names = F, sep="\t")
+
+tm5.markers <- FindAllMarkers(object = tm5, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+tm5m<- tm5.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+#write.table(tm5m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa5_tumorOnly.txt", quote=F, row.names = F, sep="\t")
+
+tm7.markers <- FindAllMarkers(object = tm7, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+tm7m<- tm7.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+write.table(tm7m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa7_tumorOnly.txt", quote=F, row.names = F, sep="\t")
+
+tm9.markers <- FindAllMarkers(object = tm9, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+tm9m<- tm9.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+write.table(tm9m, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/top20Markers_MaCa9_tumorOnly.txt", quote=F, row.names = F, sep="\t")
+
+```
+
+# Violin plot of top 2 genes per cluster 
+```{r}
+VlnPlot(object = AllSamples, features =  c(AllSamples.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = patientset, features =  c(patient.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = tumorset5, features =  c(tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = tumorset, features =  c(tumor.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = maca5, features =  c(maca5.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = maca7, features =  c(maca7.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = maca8, features =  c(maca8.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = maca9, features =  c(maca9.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+
+VlnPlot(object = tm5, features =  c(tm5.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = tm7, features =  c(tm7.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+VlnPlot(object = tm9, features =  c(tm9.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+```
+
+# Feature plot of top 2 genes per cluster 
+```{r}
+FeaturePlot(object = AllSamples, features = c(AllSamples.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = patientset, features = c(patient.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = tumorset5, features = c(tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = tumorset, features = c(tumor.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = maca5, features = c(maca5.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = maca7, features = c(maca7.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = maca8, features = c(maca8.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = maca9, features = c(maca9.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = tm5, features = c(tm5.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = tm7, features = c(tm7.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+FeaturePlot(object = tm9, features = c(tm9.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC))$gene)
+
+
+```
+
+# Heatmap plot of the top 20 genes per cluster
+```{r}
+DoHeatmap(object = AllSamples, features = c(AllSamples.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = patientset, features = c(patient.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = tumorset, features = c(tumor.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+
+DoHeatmap(object = tumorset5, features = c(tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "new_merged", size= 2, angle = 90,) + NoLegend()
+DoHeatmap(object = tumorset5, features = c(tumor.markers.5 %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "seurat_clusters", size= 2, angle = 90) + NoLegend()
+
+DoHeatmap(object = tumorset, features = c(tumor.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = tumorset, features = c(tumor.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "seurat_clusters", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = maca5, features = c(maca5.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = maca7, features = c(maca7.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = maca8, features = c(maca8.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = maca9, features = c(maca9.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+
+DoHeatmap(object = tm5, features = c(tm5.markers %>% group_by(cluster) %>% top_n(n = 30, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+DoHeatmap(object = tm7, features = c(tm7.markers %>% group_by(cluster) %>% top_n(n = 30, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+#DoHeatmap(object = tm8, features = c(tm8.markers %>% group_by(cluster) %>% top_n(n = 30, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+DoHeatmap(object = tm9, features = c(tm9.markers %>% group_by(cluster) %>% top_n(n = 30, wt = avg_logFC))$gene, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+
+
+```
+
+
+
+# write tables of metadata
+```{r}
+maca9_clusters <- maca9@meta.data
+maca9_clusters$sample_id<- row.names(maca9_clusters)
+write.table(maca9_clusters, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Figures_16APRIL2019/MaCa9_Seurat_cluster_info.txt", quote=F, row.names = F, sep="\t")
+```
+
+Save the Seurat object for further analysis 
+```{r}
+save(AllSamples,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/AllSamples.Robj")
+save(patientset,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/patientset.Robj")
+save(tumorset,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tumorset.Robj")
+save(tumorset5,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tumorset_5clusters.Robj")
+save(maca5,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/maca5.Robj")
+save(maca7,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/maca7.Robj")
+save(maca8,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/maca8.Robj")
+save(maca9,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/maca9.Robj")
+save(tm5,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tm5.Robj")
+save(tm7,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tm7.Robj")
+save(tm8,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tm8.Robj")
+save(tm9,file="~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/tm9.Robj")
+
+```
+
+# slingshot
+```{r}
+sli<- 
+```
+
+
+source("https://bioconductor.org/biocLite.R")
+biocLite("monocle")
+devtools::install_github("cole-trapnell-lab/DDRTree", ref="simple-ppt-like")
+devtools::install_github("cole-trapnell-lab/L1-graph")
+install.packages("reticulate")
+library(reticulate)
+py_install("umap-learn")
+py_install("louvain")
+devtools::install_github("cole-trapnell-lab/monocle-release")
+
+# Pesudotime analysis monocle
+```{r}
+#tm_HSMM <- importCDS(tumorset, import_all = FALSE)
+
+#Extract data, phenotype data, and feature data from the SeuratObject
+data <- as(as.matrix(tumorset5@assays$RNA@data), 'sparseMatrix')
+#data <- data[!duplicated(rownames(data)), ]
+pd <- new('AnnotatedDataFrame', data = tumorset5@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+#Construct monocle cds
+monocle_cds <- newCellDataSet(data, phenoData = pd, featureData = fd, lowerDetectionLimit = 0.5, expressionFamily = negbinomial.size())
+monocle_cds <- estimateSizeFactors(monocle_cds)
+monocle_cdsDataSet <- reduceDimension(monocle_cds, method= "DDRTree")
+monocle_cdsDataSet <- orderCells(monocle_cdsDataSet, reverse = FALSE) 
+
+cellLabels= monocle_cdsDataSet$Cell_type_advance
+cellLabels= tumorset5@meta.data$seurat_clusters
+cellLabels= tumorset5$new_overlap
+
+plot_cell_trajectory(monocle_cdsDataSet, color_by = cellLabels)
+plot_cell_trajectory(monocle_cdsDataSet, color_by = tumorset@meta.data$seurat_clusters)
+plot_cell_trajectory(monocle_cdsDataSet, color_by = as.factor(cellLabels))
+
+
+mycol <- rgb(211, 211, 211, max = 255, alpha = 50, names = "lightgrey")
+plot_cell_trajectory(monocle_cdsDataSet, color_by = as.factor(cellLabels)) + geom_point(aes(size = Pseudotime , color = as.factor(cellLabels))) + scale_color_manual(breaks = c("1", "2", "3", "4", "5", "6", "7", "8", "a", "b", "c", "No"), values=c("orangered", "mediumvioletred" , "orange2", "yellow2", "limegreen", "yellowgreen", "seagreen", "turquoise1", "purple2", "pink", "violetred1", "#D3D3D332")) + theme(legend.position = "right")
+
+plot_cell_trajectory(monocle_cdsDataSet, color_by = as.factor(cellLabels)) + geom_point(aes(size = tumorset5$new_overlap, color = as.factor(cellLabels))) 
+
+# Store the ordering
+pseudotime_monocle <-data.frame( Timepoint = phenoData(monocle_cdsDataSet)$timepoint, pseudotime = phenoData(monocle_cdsDataSet)$Pseudotime, State = phenoData(monocle_cdsDataSet)$State)
+rownames(pseudotime_monocle) <- 1:ncol(d)
+pseudotime_order_monocle <- rownames(pseudotime_monocle[order(pseudotime_monocle$pseudotime), ])
+
+reads_tumor$pseudotime_monocle_commonGenems <- pseudotime_monocle$pseudotime
+ggplot(as.data.frame(colData(reads_tumor)), aes(x = pseudotime_monocle_commonGenems, y = sc3_culster, colour = Cell_type_advance)) + geom_quasirandom(groupOnX = FALSE) + scale_color_tableau() + theme_classic() + xlab("monocle pseudotime") + ylab("Timepoint") + ggtitle("Gene list_ col AJ SC3 groups")
+ggplot(as.data.frame(colData(reads_tumor)), aes(x = pseudotime_monocle_commonGenems, y = patients, colour = Cell_type_advance)) + geom_quasirandom(groupOnX = FALSE) + scale_color_tableau() + theme_classic() + xlab("monocle pseudotime") + ylab("Timepoint") + ggtitle("Cells ordered by monocle pseudotime")
+ggplot(as.data.frame(colData(reads_tumor)), aes(x = pseudotime_monocle, y = sc3_culster, colour = Cell_type_advance)) + geom_quasirandom(groupOnX = FALSE) + scale_color_tableau() + theme_classic() + xlab("monocle pseudotime") + ylab("Timepoint") + ggtitle("Cells ordered by monocle pseudotime")
+
+
+```
+
+
+# Plot heat map based on New Gene list from Maria 18April2019
+
+```{r}
+#NG <- read.table("~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/New_Gene_list_Maria_18April2019.txt", header=F)
+#NG.1 <- c(as.character(NG[,1]))
+
+#NG.2<- read.table("~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/selected_genes_for_heatmap_29MAY20", header = T)
+#NG.2.1 <- c(as.character(NG.2[,1]))
+
+NG.2<- read.table("~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/selected_genes_for_heatmap_8JUL20.txt", header = F)
+NG.2.1 <- c(as.character(NG.2[,1]))
+#DoHeatmap(object = AllSamples, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+#DoHeatmap(object = patientset, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+
+#DoHeatmap(object = tumorset5, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 0) + theme(axis.text.y = element_text(size = 5)) + NoLegend()
+DoHeatmap(object = tumorset5, features = NG.2.1, group.by = "seurat_clusters", size= 2, angle = 0) +  theme(axis.text.y = element_text(size = 5)) + NoLegend()
+
+#DoHeatmap(object = tumorset, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+DoHeatmap(object = tumorset, features = NG.2.1, group.by = "seurat_clusters", size= 2, angle = 90) + theme(axis.text.y = element_text(size = 5)) + NoLegend()
+
+
+#DoHeatmap(object = maca5, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+#DoHeatmap(object = maca7, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+#DoHeatmap(object = maca8, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+#DoHeatmap(object = maca9, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 90) + NoLegend()
+
+#DoHeatmap(object = tm5, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+#DoHeatmap(object = tm7, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+#DoHeatmap(object = tm9, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+#DoHeatmap(object = tm9, features = NG.2.1, group.by = "Cell_type_advance", size= 2, angle = 0) + NoLegend()
+```
+
+
+# Genes of interest
+```{r}
+#  tumor-infiltrating CD4+
+FeaturePlot(object = tumorset5, features = c("ENSG00000126353", "ENSG00000120129", "ENSG00000110848", "ENSG00000073861"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000073861", "ENSG00000111537", "ENSG00000265972", "ENSG00000145649"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000100453", "ENSG00000180644", "ENSG00000102245", "ENSG00000106952"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000170345", "ENSG00000177606", "ENSG00000186891", "ENSG00000186827"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000049249", "ENSG00000204287", "ENSG00000148773", "ENSG00000072042"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000121039", "ENSG00000163513", "ENSG00000069702", "ENSG00000074800"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000111424", "ENSG00000179934", "ENSG00000115602", "ENSG00000168769"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000120875", "ENSG00000107485", "ENSG00000124766", "ENSG00000156234"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000277632", "ENSG00000275302", "ENSG00000136634", "ENSG00000138185"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000163599", "ENSG00000168961", "ENSG00000112149", "ENSG00000135077"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000188389", "ENSG00000136810", "ENSG00000189403", "ENSG00000234883"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000034510", "ENSG00000148773"))
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000126353", "ENSG00000120129", "ENSG00000110848", "ENSG00000073861"))
+
+
+
+
+
+# FeaturePlot_ILisoformes
+FeaturePlot(object = tumorset5, features = c("ENSG00000168685", "ENSG00000134460", "ENSG00000049768", "ENSG00000136810")) 
+FeaturePlot(object = tumorset5, features = c("ENSG00000126353", "ENSG00000145649", "ENSG00000179934", "ENSG00000156234"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000110848", "ENSG00000180644", "ENSG00000138185", "ENSG00000163513"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000102245", "ENSG00000073861", "ENSG00000136634", "ENSG00000074800"))
+
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000168685"))
+FeaturePlot(object = tumorset5, features = c("ENSG00000134460"))
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000049768"))
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000126353"))
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000234883"))
+
+FeaturePlot(object = tumorset5, features = c("ENSG00000168685"))
+
+```
+
+
+# Perform integration
+```{r}
+library(cowplot)
+source("http://bioconductor.org/biocLite.R")
+biocLite()
+biocLite("monocle")
+devtools::install_github("cole-trapnell-lab/DDRTree", ref="simple-ppt-like")
+devtools::install_github("cole-trapnell-lab/L1-graph")
+install.packages("reticulate")
+library(reticulate)
+py_install('umap-learn', pip = T, pip_ignore_installed = T) # Ensure the latest version of UMAP is installed
+py_install("louvain")
+source("http://bioconductor.org/biocLite.R")
+biocLite()
+biocLite("monocle")
+library(monocle)
+
+
+
+```
+
+# Perform an integrated analysis the three main goals for this analysis are:
+Identify cell types that are present in both MaCa5 and MaCa9
+Obtain cell type markers that are conserved in both patients
+Compare the datasets to find cell-type specific gene markers without patient specific DE genes
+```{r}
+tumor.anchors <- FindIntegrationAnchors(object.list = list(tm5, tm9), dims = 1:20)
+macas.combined <- IntegrateData(anchorset = tumor.anchors, dims = 1:20)
+DefaultAssay(object = macas.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+macas.combined <- ScaleData(object = macas.combined, verbose = FALSE)
+macas.combined <- RunPCA(object = macas.combined, npcs = 30, verbose = FALSE)
+# t-SNE and Clustering
+macas.combined <- RunUMAP(object = macas.combined, reduction = "pca", dims = 1:20)
+macas.combined <- FindNeighbors(object = macas.combined, reduction = "pca", dims = 1:20)
+macas.combined <- FindClusters(macas.combined, resolution = 0.5)
+
+# Visualization
+
+p1 <- DimPlot(macas.combined, reduction = "umap", group.by = "patients")
+p2 <- DimPlot(macas.combined, reduction = "umap", label = TRUE)
+p3 <- DimPlot(macas.combined, reduction = "umap", group.by = "Cell_type_advance")
+p4 <- DimPlot(macas.combined, reduction = "umap", group.by = "run_id")
+
+plot_grid(p1, p2, p3, p4)
+
+DimPlot(macas.combined, reduction = "umap", split.by = "patients")
+```
+
+# Identify conserved cell type markers
+To identify canonical cell type marker genes that are conserved across patients, we used the FindConservedMarkers function. This function performs differential gene expression testing for each dataset/group and combines the p-values using meta-analysis methods from the MetaDE R package. 
+```{r}
+DefaultAssay(macas.combined) <- "RNA"
+
+ActTconv.Vs.Treg_markers <- FindConservedMarkers(macas.combined, ident.1 = 1, ident.2 = 2, grouping.var = "patients", verbose = FALSE)
+ActTconv.Vs.Treg_markers$gene<- row.names(ActTconv.Vs.Treg_markers)
+head(ActTconv.Vs.Treg_markers)
+write.table(ActTconv.Vs.Treg_markers, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Conserved_CellTypeMarkers_MaCa5&5_ActTconvVsTreg.txt", quote=F, row.names=F, sep="\t")
+
+ActTconv.Vs.Tconv_markers <- FindConservedMarkers(macas.combined, ident.1 = 1, ident.2 = 0, grouping.var = "patients", verbose = FALSE)
+ActTconv.Vs.Tconv_markers$gene<- row.names(ActTconv.Vs.Tconv_markers)
+head(ActTconv.Vs.Tconv_markers)
+write.table(ActTconv.Vs.Tconv_markers, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Conserved_CellTypeMarkers_MaCa5&5_ActTconv.Vs.Tconv_markers.txt", quote=F, row.names=F, sep="\t")
+
+Treg.Vs.Tconv_markers <- FindConservedMarkers(macas.combined, ident.1 = 2, ident.2 = 0, grouping.var = "patients", verbose = FALSE)
+Treg.Vs.Tconv_markers$gene<- row.names(Treg.Vs.Tconv_markers)
+head(Treg.Vs.Tconv_markers)
+write.table(Treg.Vs.Tconv_markers, "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/Conserved_CellTypeMarkers_MaCa5&5_Treg.Vs.Tconv_markers.txt", quote=F, row.names=F, sep="\t")
+```
+
+
+# Build a phylogenetic tree, and rename/reorder cluster names according to their position on the tree
+# This gives closely related clusters similar cluster IDs, which is occasionally useful for visualization later on
+# Assigned cluster will be placed in the 'tree.ident' field of nbt@data.info, and also stored in nbt@ident
+```{r}
+# Density cluster the tSNE map - note that the G.use parameter is the density parameter for the clustering - lower G.use to get finer settings
+# Cells which are 'unassigned' are put in cluster 1 - though in this case there are none
+# Assigned cluster will be placed in the 'DBClust.ident' field of nbt@data.info. Putting set.ident=TRUE means that the assigned clusters will also be stored in nbt@ident
+nbt=DBclust_dimension(tumorset,1,2,reduction.use = "tsne",G.use = 8,set.ident = TRUE)
+tsne.plot(nbt,pt.size = 1)
+nbt=buildClusterTree(tumorset,do.reorder = TRUE,reorder.numeric = TRUE,pcs.use = 1:11)
+```
+
+
+#select the overlaps
+```{r}
+overlap<- subset(AllSamples, subset= overlap == "Yes")
+DoHeatmap(object = overlap, features = NG.1, group.by = "Cell_type_advance", size= 2, angle = 45) + NoLegend()
+overlap_in_maca985<- subset(tumorset, subset= patients %in% c("MaCa9", "MaCa8", "MaCa5") & overlap == "Yes")
+DoHeatmap(object = overlap_in_maca985, features = NG.1, group.by = "Cell_type_advance", size= 2, angle = 45) + NoLegend()
+
+poverlap<- subset(patientset, subset= overlap == "Yes")
+DoHeatmap(object = poverlap, features = NG.1, group.by = "Cell_type_advance", size= 2, angle = 45) + NoLegend()
+
+New_overlap<- read.table("~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/overlap_list_MX.txt", header = T)
+tumorset5@meta.data$new_overlap<- "NA"
+for(i in 1:nrow(tumorset5@meta.data)){
+  for(f in 1:nrow(New_overlap)){
+    if(row.names(tumorset5@meta.data)[i] == New_overlap$sample_id[f]){
+      tumorset5@meta.data$new_overlap[i]<- as.character(New_overlap$overlap_id[f])
+    }
+  }
+}
+
+tumorset5@meta.data$new_merged <- paste(tumorset5$seurat_clusters, "_", tumorset5$patients, "_", tumorset5$Cell_type_advance, "_", tumorset5$new_overlap, sep="")
+
+newoverlap<- subset(tumorset5, subset= new_overlap != "No")
+DoHeatmap(object = newoverlap, features = NG.1, group.by = "new_merged", size=2, angle=30) + NoLegend() + theme(axis.text.y = element_text(size = 5))
+
+saveRDS(newoverlap, file = "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/newoverlap_for_SC3.rds")
+over <- readRDS(file = "~/Documents/Tregs_tumor_patients/Manuscript_matrials/Seurat/newoverlap_for_SC3.rds")
+over.sce <- as.SingleCellExperiment(over)
+rowData(over.sce)$feature_symbol<- rownames(over.sce)
+
+#SC3
+source("https://bioconductor.org/biocLite.R")
+biocLite("SC3")
+biocLite("rngtools")
+library("SC3")
+
+#preparing sc3
+over_sc3 <- sc3_prepare(over.sce)
+
+# Estimating k
+input_reads <- sc3_estimate_k(input_reads)
+
+#k
+metadata(input_reads)$sc3$k_estimation #estimated k=10
+
+#run SC3
+input_reads.qc <- sc3(input_reads.qc, ks = 2, biology = TRUE)
+
+## run SC3 in an interactive Shiny session
+sc3_interactive(input_reads.qc)
+
+pca_data<- prcomp(log1p(assay(input_reads.qc)))
+
+tsne_data <- Rtsne(pca_data$x[,1:50], pca = FALSE)
+
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
